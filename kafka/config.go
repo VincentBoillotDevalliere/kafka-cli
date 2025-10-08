@@ -1,12 +1,12 @@
 package kafka
 
 import (
-    "log"
-    "strings"
+	"log"
+	"strings"
 
-    "github.com/fatih/color"
-    "github.com/joho/godotenv"
-    "github.com/spf13/viper"
+	"github.com/fatih/color"
+	"github.com/joho/godotenv"
+	"github.com/spf13/viper"
 )
 
 type Config struct {
@@ -24,11 +24,11 @@ func LoadConfig() Config {
 	viper.SetDefault("KAFKA_BROKERS", "localhost:9092")
 
 	brokers := viper.GetString("KAFKA_BROKERS")
-    if brokers == "" {
-        log.Fatal(color.RedString("KAFKA_BROKERS environment variable is required"))
-    }
+	if brokers == "" {
+		log.Fatal(color.RedString("KAFKA_BROKERS environment variable is required"))
+	}
 
-    color.Blue("Connecting to Kafka brokers: %s", brokers)
+	color.Blue("Connecting to Kafka brokers: %s", brokers)
 
 	return Config{
 		Brokers: strings.Split(brokers, ","),

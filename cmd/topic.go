@@ -4,9 +4,9 @@ Copyright © 2025 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
-    "github.com/fatih/color"
-    kafkaGo "github.com/segmentio/kafka-go"
-    "github.com/spf13/cobra"
+	"github.com/fatih/color"
+	kafkaGo "github.com/segmentio/kafka-go"
+	"github.com/spf13/cobra"
 
 	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 )
@@ -21,7 +21,7 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all topics",
 	RunE: func(cmd *cobra.Command, args []string) error {
-        color.Cyan("Listing all topics")
+		color.Cyan("Listing all topics")
 		cfg := kafka.LoadConfig()
 		conn, err := kafkaGo.Dial("tcp", cfg.Brokers[0])
 		if err != nil {
@@ -37,12 +37,12 @@ var listCmd = &cobra.Command{
 		for _, p := range partitions {
 			topicsMap[p.Topic] = struct{}{}
 		}
-        color.Blue("Topics:")
+		color.Blue("Topics:")
 		for topic := range topicsMap {
-            color.Yellow(" - %s", topic)
-        }
-        return nil
-    },
+			color.Yellow(" - %s", topic)
+		}
+		return nil
+	},
 }
 
 func init() {

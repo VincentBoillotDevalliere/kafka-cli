@@ -4,12 +4,12 @@ Copyright © 2025 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
-    "context"
-    "time"
+	"context"
+	"time"
 
-    "github.com/fatih/color"
-    kafkaGo "github.com/segmentio/kafka-go"
-    "github.com/spf13/cobra"
+	"github.com/fatih/color"
+	kafkaGo "github.com/segmentio/kafka-go"
+	"github.com/spf13/cobra"
 
 	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 )
@@ -20,10 +20,10 @@ var consumeCmd = &cobra.Command{
 	Short: "Consume messages from a Kafka topic",
 	Run: func(cmd *cobra.Command, args []string) {
 		topic := args[0]
-        if topic == "" {
-            color.Red("Topic is required")
-        }
-        color.Cyan("Consuming messages from topic: %s", topic)
+		if topic == "" {
+			color.Red("Topic is required")
+		}
+		color.Cyan("Consuming messages from topic: %s", topic)
 
 		readWithReader(topic, "consumer-through-kafka 1")
 	},
@@ -50,13 +50,13 @@ func readWithReader(topic, groupID string) {
 		if err != nil {
 			break
 		}
-        color.Yellow("message at topic/partition/offset %v/%v/%v: %s = %s",
-            msg.Topic, msg.Partition, msg.Offset, string(msg.Key), string(msg.Value))
+		color.Yellow("message at topic/partition/offset %v/%v/%v: %s = %s",
+			msg.Topic, msg.Partition, msg.Offset, string(msg.Key), string(msg.Value))
 	}
 
-    if err := r.Close(); err != nil {
-        color.Red("failed to close reader: %v", err)
-    }
+	if err := r.Close(); err != nil {
+		color.Red("failed to close reader: %v", err)
+	}
 }
 
 func init() {
