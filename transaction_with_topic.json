@@ -1,0 +1,46 @@
+[
+    {
+        "topic": "cpms.charger.transaction",
+        "object": {
+            "siteAreaID": "64d23b4ec614169d7693dc46",
+            "transactionId": 616621974,
+            "chargeBoxID": "AUTO-STAGECOACH-EPOCH-00002",
+            "connectorId": 2,
+            "eventType": "start",
+            "timestamp": "2025-09-26T08:49:22.149Z"
+        }
+    },
+    {
+        "topic": "cpms.charger.consumption",
+        "object": {
+            "transactionId": 1536341765,
+            "connectorId": 4,
+            "chargeBoxID": "DEMO-IN-00000",
+            "siteAreaID": "67853bc2cbd32c893fd6f2ee",
+            "siteID": "678527095f582a123cee776f",
+            "userID": "67851ab5cbd32c893fd6f2e9",
+            "carID": "678532502af1eb6018200471",
+            "energyFragmentAlreadyResolved": true,
+            "startedAt": "2025-09-25T15:30:08.843Z",
+            "endedAt": "2025-09-25T15:31:08.843Z",
+            "consumptionWh": 383.29999999981374,
+            "meterValueWh": 5799620.5,
+            "durationSecs": 60,
+            "totalDurationSecs": 903.573,
+            "cumulatedConsumptionWh": 5377.5,
+            "cumulatedAmount": 1.747970000000065,
+            "pricingSource": "simple",
+            "toPrice": true,
+            "inactivitySecs": 0,
+            "totalInactivitySecs": 0,
+            "instantWatts": 22997.999999988824,
+            "limitAmps": 26,
+            "limitWatts": 17940,
+            "limitSource": "CP",
+            "limitSiteAreaWatts": 300000,
+            "limitSiteAreaAmps": 1304.3478260869565,
+            "limitSiteAreaSource": "SA",
+            "smartChargingActive": true
+        }
+    }
+]

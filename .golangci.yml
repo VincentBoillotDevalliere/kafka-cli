@@ -1,0 +1,60 @@
+run:
+  timeout: 3m
+  tests: true
+  go: "1.23"
+
+output:
+  format: colored-line-number
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - gosimple
+    - ineffassign
+    - typecheck
+    - revive
+    - gofumpt
+    - gci
+    - misspell
+    - unused
+  fast: false
+
+linters-settings:
+  gofumpt:
+    extra-rules: true
+  gci:
+    skip-generated: true
+    sections:
+      - standard
+      - default
+      - prefix(github.com/VincentBoillotDevalliere/kafka-cli)
+  revive:
+    severity: warning
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: exported
+        disabled: true
+      - name: if-return
+      - name: increment-decrement
+      - name: var-naming
+      - name: range-val-address
+      - name: receiver-naming
+      - name: time-naming
+      - name: unreachable-code
+      - name: waitgroup-by-value
+  misspell:
+    locale: US
+
+issues:
+  exclude-use-default: false
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
