@@ -13,11 +13,14 @@ A powerful and user-friendly command-line tool for interacting with Apache Kafka
 - 🎯 **Simple CLI Interface** - Intuitive commands for all Kafka operations
 - 📤 **Message Production** - Send messages to Kafka topics with ease
 - 📥 **Message Consumption** - Consume messages from topics with real-time output
-- 📁 **Batch Operations** - Process multiple messages from JSON files
+- � **Message Extraction** - Extract messages by time range with timezone support
+- �📁 **Batch Operations** - Process multiple messages from JSON files
 - 🏷️ **Topic Management** - List and manage Kafka topics
-- 🎨 **Colored Output** - Beautiful, colored terminal output for better readability
+- � **Timezone Support** - Work with multiple timezones for time-based operations
+- �🎨 **Colored Output** - Beautiful, colored terminal output for better readability
 - ⚙️ **Flexible Configuration** - Environment variable support with sensible defaults
 - 🔄 **Consumer Groups** - Full support for Kafka consumer groups
+- 🚀 **Efficient Processing** - Time-based offset lookup for optimal performance
 
 ## 🛠️ Installation
 
@@ -69,31 +72,114 @@ kafka-cli produce my-topic --message '{"user": "john", "action": "login"}'
 kafka-cli consume my-topic
 ```
 
+### 5. Extract Messages by Time
+
+```bash
+# Extract last hour using local timezone
+kafka-cli extract --topic my-topic --from "2025-10-08 15:00:00" --to "2025-10-08 16:00:00" -o messages.json
+```
+
+## 📝 Command Examples
+
+### Complete Workflow Example
+
+```bash
+# 1. Check available topics
+kafka-cli topic list
+
+# 2. Produce some test messages
+echo '{"event": "user_login", "userId": 123, "timestamp": "2025-10-08T15:30:00Z"}' | \
+kafka-cli produce user-events --message "$(cat)"
+
+# 3. Produce from a batch file
+cat > batch_messages.json << 'EOF'
+[
+  {
+    "Topic": "user-events",
+    "Headers": {"source": "web", "version": "1.0"},
+    "Message": {"event": "signup", "userId": 456}
+  },
+  {
+    "Topic": "user-events", 
+    "Headers": {"source": "mobile", "version": "2.1"},
+    "Message": {"event": "purchase", "userId": 456, "amount": 99.99}
+  }
+]
+EOF
+
+kafka-cli produce -i batch_messages.json
+
+# 4. Consume messages (Ctrl+C to stop)
+kafka-cli consume user-events
+
+# 5. Extract messages from specific time window
+kafka-cli extract --topic user-events \
+  --from "2025-10-08T15:00:00+02:00" \
+  --to "2025-10-08T16:00:00+02:00" \
+  -o extracted_events.json
+
+# 6. Check the extracted file
+cat extracted_events.json | jq '.[].Message.event'
+```
+
+### Production Use Cases
+
+```bash
+# Monitor errors in production
+kafka-cli consume error-logs --group monitoring-team
+
+# Extract audit logs for compliance
+kafka-cli extract --topic audit-logs \
+  --from "2025-10-01T00:00:00Z" \
+  --to "2025-10-31T23:59:59Z" \
+  -o october_audit.json
+
+# Batch process user events
+kafka-cli produce -i daily_user_events.json
+
+# Debug specific time window
+kafka-cli extract --topic app-logs \
+  --from "2025-10-08 14:30:00" \
+  --to "2025-10-08 14:45:00" \
+  -o incident_logs.json
+```
+
 ## 📖 Usage
 
-### Producing Messages
+### 📤 Producing Messages
 
 #### Single Message
 ```bash
+# Produce a single message to a topic
 kafka-cli produce my-topic --message '{"event": "user_signup", "userId": 123}'
+
+# Alternative syntax
+kafka-cli produce --message '{"event": "login", "userId": 456}' my-topic
 ```
 
-#### From JSON File
+#### Batch Production from JSON File
 Create a JSON file with message envelopes:
 
 ```json
 [
   {
-    "topic": "user-events",
-    "object": {
+    "Topic": "user-events",
+    "Headers": {
+      "source": "web-app",
+      "correlation-id": "abc-123"
+    },
+    "Message": {
       "event": "signup",
       "userId": 123,
       "email": "user@example.com"
     }
   },
   {
-    "topic": "notifications",
-    "object": {
+    "Topic": "notifications",
+    "Headers": {
+      "priority": "high"
+    },
+    "Message": {
       "type": "welcome_email",
       "userId": 123
     }
@@ -104,23 +190,109 @@ Create a JSON file with message envelopes:
 Then produce all messages:
 
 ```bash
+# Produce from file
 kafka-cli produce --input messages.json
+
+# Alternative short form
+kafka-cli produce -i messages.json
 ```
 
-### Consuming Messages
+**Output Example:**
+```
+🚀 Kafka Producer
+📂 Reading file: messages.json
+🧾 Found 2 messages
+✅ Produced message #1 to topic 'user-events'
+✅ Produced message #2 to topic 'notifications'
+🎉 Done!
+```
+
+### 📥 Consuming Messages
 
 ```bash
-# Consume from a specific topic
+# Consume from a specific topic (starts from latest by default)
 kafka-cli consume user-events
 
-# The consumer will automatically use a generated consumer group
+# Consume with specific consumer group
+kafka-cli consume user-events --group my-consumer-group
+
+# Consume from beginning of topic
+kafka-cli consume user-events --from-beginning
 ```
 
-### Topic Management
+### 📊 Extracting Messages (Time-based)
+
+Extract messages from a topic within a specific time range and save them to a JSON file:
+
+#### Basic Extraction
+```bash
+# Extract messages from the last 15 minutes (default)
+kafka-cli extract --topic user-events -o extracted.json
+
+# Extract with specific time range (UTC)
+kafka-cli extract --topic user-events \
+  --from "2025-10-08T10:00:00Z" \
+  --to "2025-10-08T11:00:00Z" \
+  -o morning-events.json
+```
+
+#### Timezone Support
+```bash
+# Using your local timezone (no timezone specified)
+kafka-cli extract --topic user-events \
+  --from "2025-10-08 15:00:00" \
+  --to "2025-10-08 16:00:00" \
+  -o local-time.json
+
+# Using explicit timezone (CEST/UTC+2)
+kafka-cli extract --topic user-events \
+  --from "2025-10-08T15:00:00+02:00" \
+  --to "2025-10-08T16:00:00+02:00" \
+  -o cest-events.json
+
+# Different timezones
+kafka-cli extract --topic logs \
+  --from "2025-10-08T09:00:00-04:00" \  # EDT (New York)
+  --to "2025-10-08T10:00:00-04:00" \
+  -o ny-morning.json
+```
+
+**Output Example:**
+```
+🕒 Extract window: from 2025-10-08T15:00:00+02:00 to 2025-10-08T16:00:00+02:00
+🌍 Using timezone: Local
+📊 Topic user-events partition 0: 0 (first) → 1543 (last)
+🕐 Finding start offset for time: 2025-10-08T15:00:00+02:00
+🕐 Finding end offset for time: 2025-10-08T16:00:00+02:00
+📊 Time-based offset range: 1200 → 1350
+🎯 Will read approximately 150 messages
+✅ Reader positioned at offset 1200
+🔍 Reading 150 messages from offset 1200 to 1350...
+📊 Total messages extracted: 147
+✅ Extracted 147 messages → cest-events.json
+```
+
+#### Supported Time Formats
+```bash
+# RFC3339 with timezone (recommended)
+--from "2025-10-08T15:00:00+02:00"    # CEST
+--from "2025-10-08T13:00:00Z"         # UTC  
+--from "2025-10-08T09:00:00-04:00"    # EDT
+
+# Local timezone (automatic)
+--from "2025-10-08T15:00:00"          # Uses local timezone
+--from "2025-10-08 15:00:00"          # Space separator
+--from "2025-10-08T15:00"             # Without seconds
+```
+
+### 🏷️ Topic Management
 
 ```bash
 # List all topics
 kafka-cli topic list
+
+# Get detailed topic information
+kafka-cli topic describe my-topic
 ```
 
 ## ⚙️ Configuration
@@ -226,7 +398,50 @@ Found a bug or have a feature request? Please create an issue on GitHub:
 
 [**Create an Issue**](https://github.com/VincentBoillotDevalliere/kafka-cli/issues/new)
 
-## 📄 License
+## � Troubleshooting
+
+### Common Issues
+
+#### Connection Issues
+```bash
+# Check if Kafka brokers are accessible
+telnet localhost 9092
+
+# Verify your broker configuration
+echo $KAFKA_BROKERS
+```
+
+#### Time Zone Issues
+```bash
+# Check your system timezone
+date
+
+# Use explicit timezone in commands
+kafka-cli extract --topic my-topic \
+  --from "2025-10-08T15:00:00+02:00" \
+  --to "2025-10-08T16:00:00+02:00"
+```
+
+#### No Messages Found
+```bash
+# Check if topic exists and has messages
+kafka-cli topic list
+
+# Try extracting all available messages first
+kafka-cli extract --topic my-topic -o all_messages.json
+
+# Check message timestamps
+cat all_messages.json | jq '.[0]' # View first message
+```
+
+### Performance Tips
+
+- Use time-based extraction instead of consuming all messages for large topics
+- Specify appropriate time windows to avoid reading too many messages
+- Use batch production for multiple messages
+- Monitor consumer lag when consuming in real-time
+
+## �📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
