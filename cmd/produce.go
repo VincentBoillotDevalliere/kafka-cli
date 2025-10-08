@@ -18,8 +18,9 @@ import (
 )
 
 type MessageEnvelope struct {
-	Topic  string                 `json:"topic"`
-	Object map[string]interface{} `json:"object"`
+	Topic   string                 `json:"Topic"`
+	Headers map[string]string      `json:"Headers,omitempty"`
+	Message map[string]interface{} `json:"Message"`
 }
 
 var (
@@ -38,6 +39,8 @@ If a JSON file is provided with -i, each element should contain a "topic" and an
   { "topic": "topicB", "object": {...} }
 ]`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		color.Cyan("🚀 Kafka Producer")
+
 		if message == "" && inputFile == "" {
 			return fmt.Errorf("either --message or --input must be provided")
 		}
@@ -46,29 +49,29 @@ If a JSON file is provided with -i, each element should contain a "topic" and an
 			if err != nil {
 				return fmt.Errorf("failed to handle file input: %v", err)
 			}
-			for _, msg := range messages {
-				color.Cyan("Producing message to topic: %s", msg.Topic)
-				jsonMsg, err := json.Marshal(msg.Object)
+			for i, msg := range messages {
+				jsonMsg, err := json.Marshal(msg.Message)
 				if err != nil {
 					return fmt.Errorf("failed to marshal message object: %v", err)
 				}
-				err = ProduceMessage(msg.Topic, string(jsonMsg))
+				err = ProduceMessage(msg.Topic, string(jsonMsg), msg.Headers)
 				if err != nil {
 					return fmt.Errorf("failed to produce message: %v", err)
 				}
-				color.Green("Produced message to topic %s: %s", msg.Topic, string(jsonMsg))
+				color.Green("✅ Produced message #%d to topic '%s'", i+1, msg.Topic)
 			}
+			color.Magenta("🎉 Done!")
 		} else {
 			if len(args) < 1 {
 				return fmt.Errorf("topic argument is required when using --message")
 			}
 			topic := args[0]
-			color.Cyan("Producing message to topic: %s", topic)
-			err := ProduceMessage(topic, message)
+			err := ProduceMessage(topic, message, nil)
 			if err != nil {
 				return fmt.Errorf("failed to produce message: %v", err)
 			}
-			color.Green("Produced message to topic %s: %s", topic, message)
+			color.Green("✅ Produced message to topic '%s'", topic)
+			color.Magenta("🎉 Done!")
 		}
 		return nil
 	},
@@ -80,17 +83,21 @@ func init() {
 	produceCmd.Flags().StringVarP(&inputFile, "input", "i", "", "Optional input file containing messages (one per line)")
 }
 
-func ProduceMessage(topic, jsonInput string) error {
+func ProduceMessage(topic, jsonInput string, headers map[string]string) error {
 	cfg := kafka.LoadConfig()
 	w := kafkaGo.NewWriter(kafkaGo.WriterConfig{
 		Brokers:  cfg.Brokers,
 		Topic:    topic,
 		Balancer: &kafkaGo.Hash{},
 	})
-
+	var kafkaHeaders []kafkaGo.Header
+	for k, v := range headers {
+		kafkaHeaders = append(kafkaHeaders, kafkaGo.Header{Key: k, Value: []byte(v)})
+	}
 	err := w.WriteMessages(context.Background(),
 		kafkaGo.Message{
-			Value: []byte(jsonInput),
+			Value:   []byte(jsonInput),
+			Headers: kafkaHeaders,
 		},
 	)
 	if err != nil {
@@ -100,17 +107,11 @@ func ProduceMessage(topic, jsonInput string) error {
 }
 
 func HandleFileInput(inputFile string) ([]MessageEnvelope, error) {
-	color.Blue("📂 Reading messages from file: %s", inputFile)
+	color.Blue("📂 Reading file: %s", inputFile)
 	var inputs []MessageEnvelope
-	file, err := os.Open(inputFile)
+	data, err := readFile(inputFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
+		return nil, err
 	}
 
 	var envelopes []MessageEnvelope
@@ -123,19 +124,29 @@ func HandleFileInput(inputFile string) ([]MessageEnvelope, error) {
 		envelopes = append(envelopes, singleMessage)
 	}
 
-	color.Blue("🧾 Found %d messages in file", len(envelopes))
+	color.Blue("🧾 Found %d messages", len(envelopes))
 
-	for i, obj := range envelopes {
-		bytes, err := json.Marshal(obj)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encode JSON object #%d: %w", i+1, err)
-		}
+	for _, obj := range envelopes {
 		inputs = append(inputs, MessageEnvelope{
-			Topic:  obj.Topic,
-			Object: obj.Object,
+			Headers: obj.Headers,
+			Topic:   obj.Topic,
+			Message: obj.Message,
 		})
-		color.Yellow("  - Parsed message #%d for topic '%s': %s", i+1, obj.Topic, string(bytes))
 	}
 
 	return inputs, nil
+}
+
+func readFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return data, nil
 }
