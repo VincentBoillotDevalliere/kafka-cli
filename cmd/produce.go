@@ -82,7 +82,7 @@ func init() {
 
 func ProduceMessage(topic, jsonInput string, headers map[string]string) error {
 	cfg := kafka.LoadConfig()
-	
+
 	// Create franz-go client with producer configuration
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.Brokers...),
@@ -109,14 +109,14 @@ func ProduceMessage(topic, jsonInput string, headers map[string]string) error {
 	// Produce the message synchronously
 	ctx := context.Background()
 	results := client.ProduceSync(ctx, record)
-	
+
 	// Check for errors
 	for _, result := range results {
 		if result.Err != nil {
 			return fmt.Errorf("failed to produce message: %w", result.Err)
 		}
 	}
-	
+
 	return nil
 }
 
