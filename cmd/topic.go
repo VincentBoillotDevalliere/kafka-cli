@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
+
 	"github.com/fatih/color"
-	kafkaGo "github.com/segmentio/kafka-go"
 	"github.com/spf13/cobra"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 )
@@ -20,23 +23,28 @@ var listCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		color.Cyan("Listing all topics")
 		cfg := kafka.LoadConfig()
-		conn, err := kafkaGo.Dial("tcp", cfg.Brokers[0])
-		if err != nil {
-			return err
-		}
-		defer func() { _ = conn.Close() }()
 
-		partitions, err := conn.ReadPartitions()
+		// Create a new Kafka client using franz-go
+		client, err := kgo.NewClient(
+			kgo.SeedBrokers(cfg.Brokers...),
+		)
 		if err != nil {
 			return err
 		}
-		topicsMap := make(map[string]struct{})
-		for _, p := range partitions {
-			topicsMap[p.Topic] = struct{}{}
+		defer client.Close()
+
+		// Create admin client for metadata operations
+		adminClient := kadm.NewClient(client)
+
+		// List topics using admin client
+		topicsMetadata, err := adminClient.ListTopics(context.Background())
+		if err != nil {
+			return err
 		}
+
 		color.Blue("Topics:")
-		for topic := range topicsMap {
-			color.Yellow(" - %s", topic)
+		for topicName := range topicsMetadata {
+			color.Yellow(" - %s", topicName)
 		}
 		return nil
 	},
