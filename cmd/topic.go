@@ -5,8 +5,6 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
-	"github.com/twmb/franz-go/pkg/kadm"
-	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 )
@@ -24,17 +22,12 @@ var listCmd = &cobra.Command{
 		color.Cyan("Listing all topics")
 		cfg := kafka.LoadConfig()
 
-		// Create a new Kafka client using franz-go
-		client, err := kgo.NewClient(
-			kgo.SeedBrokers(cfg.Brokers...),
-		)
+		// Create admin client using utility function
+		client, adminClient, err := cfg.NewAdminClient()
 		if err != nil {
 			return err
 		}
 		defer client.Close()
-
-		// Create admin client for metadata operations
-		adminClient := kadm.NewClient(client)
 
 		// List topics using admin client
 		topicsMetadata, err := adminClient.ListTopics(context.Background())

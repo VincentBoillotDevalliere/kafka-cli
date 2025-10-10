@@ -83,11 +83,8 @@ func init() {
 func ProduceMessage(topic, jsonInput string, headers map[string]string) error {
 	cfg := kafka.LoadConfig()
 
-	// Create franz-go client with producer configuration
-	client, err := kgo.NewClient(
-		kgo.SeedBrokers(cfg.Brokers...),
-		kgo.DefaultProduceTopic(topic), // Set default topic for convenience
-	)
+	// Create optimized producer client
+	client, err := cfg.NewProducerClient(topic)
 	if err != nil {
 		return fmt.Errorf("failed to create kafka client: %w", err)
 	}

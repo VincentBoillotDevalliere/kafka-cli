@@ -10,7 +10,6 @@ import (
 	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
-	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -54,17 +53,12 @@ The output file can be specified with the --output flag. If not provided, it def
 		cfg := kafka.LoadConfig()
 		ctx := context.Background()
 
-		// 1️⃣ Create franz-go client for admin operations
-		client, err := kgo.NewClient(
-			kgo.SeedBrokers(cfg.Brokers...),
-		)
+		// 1️⃣ Create admin client using utility function
+		client, adminClient, err := cfg.NewAdminClient()
 		if err != nil {
 			return fmt.Errorf("failed to create kafka client: %w", err)
 		}
 		defer client.Close()
-
-		// Create admin client for metadata operations
-		adminClient := kadm.NewClient(client)
 
 		// 2️⃣ Get partition metadata and basic offset information
 		topicDetails, err := adminClient.ListTopics(ctx, topic)
@@ -149,15 +143,8 @@ The output file can be specified with the --output flag. If not provided, it def
 		messageCount := endOffset - startOffset
 		color.Green("🎯 Will read approximately %d messages", messageCount)
 
-		// 3️⃣ Create franz-go consumer with specific partition and offset
-		consumerClient, err := kgo.NewClient(
-			kgo.SeedBrokers(cfg.Brokers...),
-			kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{
-				topic: {0: kgo.NewOffset().At(startOffset)}, // Start from specific offset
-			}),
-			kgo.FetchMinBytes(1),
-			kgo.FetchMaxBytes(1024*1024),
-		)
+		// 3️⃣ Create partition consumer using utility function
+		consumerClient, err := cfg.NewPartitionConsumerClient(topic, 0, startOffset)
 		if err != nil {
 			return fmt.Errorf("failed to create consumer client: %w", err)
 		}

@@ -34,17 +34,8 @@ var consumeCmd = &cobra.Command{
 func readWithReader(topic, groupID string) {
 	cfg := kafka.LoadConfig()
 
-	// Create franz-go client with consumer group
-	client, err := kgo.NewClient(
-		kgo.SeedBrokers(cfg.Brokers...),
-		kgo.ConsumerGroup(groupID),
-		kgo.ConsumeTopics(topic),
-		kgo.FetchMinBytes(1),                   // Start fetching immediately when any data is available
-		kgo.FetchMaxBytes(1024*1024),           // Allow up to 1MB per fetch (much more reasonable)
-		kgo.FetchMaxWait(100*time.Millisecond), // Don't wait more than 100ms for more data
-		kgo.SessionTimeout(10*time.Second),     // Faster session timeout
-		kgo.HeartbeatInterval(3*time.Second),   // More frequent heartbeats
-	)
+	// Create optimized consumer client
+	client, err := cfg.NewConsumerClient(groupID, topic)
 	if err != nil {
 		color.Red("failed to create kafka client: %v", err)
 		return
