@@ -7,10 +7,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 	"github.com/fatih/color"
-	kafkaGo "github.com/segmentio/kafka-go"
 	"github.com/spf13/cobra"
+	"github.com/twmb/franz-go/pkg/kgo"
+
+	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 )
 
 var (
@@ -53,50 +54,84 @@ The output file can be specified with the --output flag. If not provided, it def
 		cfg := kafka.LoadConfig()
 		ctx := context.Background()
 
-		// 1️⃣ Dial the partition leader
-		conn, err := kafkaGo.DialLeader(ctx, "tcp", cfg.Brokers[0], topic, 0)
+		// 1️⃣ Create admin client using utility function
+		client, adminClient, err := cfg.NewAdminClient()
 		if err != nil {
-			return fmt.Errorf("failed to dial leader: %w", err)
+			return fmt.Errorf("failed to create kafka client: %w", err)
 		}
-		defer conn.Close()
+		defer client.Close()
 
-		// 2️⃣ Get basic offset information first
-		firstOffset, err := conn.ReadFirstOffset()
+		// 2️⃣ Get partition metadata and basic offset information
+		topicDetails, err := adminClient.ListTopics(ctx, topic)
 		if err != nil {
-			return fmt.Errorf("failed to read first offset: %w", err)
+			return fmt.Errorf("failed to get topic details: %w", err)
 		}
 
-		lastOffset, err := conn.ReadLastOffset()
+		topicInfo, exists := topicDetails[topic]
+		if !exists {
+			return fmt.Errorf("topic %s does not exist", topic)
+		}
+
+		if len(topicInfo.Partitions) == 0 {
+			return fmt.Errorf("topic %s has no partitions", topic)
+		}
+
+		// Get earliest and latest offsets for partition 0 using timestamp lookups
+		earliestOffsets, err := adminClient.ListOffsetsAfterMilli(ctx, 0, topic) // 0 = earliest
 		if err != nil {
-			return fmt.Errorf("failed to read last offset: %w", err)
+			return fmt.Errorf("failed to get earliest offsets: %w", err)
+		}
+
+		latestOffsets, err := adminClient.ListOffsetsAfterMilli(ctx, -1, topic) // -1 = latest
+		if err != nil {
+			return fmt.Errorf("failed to get latest offsets: %w", err)
+		}
+
+		var firstOffset, lastOffset int64
+		if offsets, exists := earliestOffsets[topic]; exists {
+			if partOffset, partExists := offsets[0]; partExists {
+				firstOffset = partOffset.Offset
+			}
+		}
+
+		if offsets, exists := latestOffsets[topic]; exists {
+			if partOffset, partExists := offsets[0]; partExists {
+				lastOffset = partOffset.Offset
+			}
 		}
 
 		color.Cyan("📊 Topic %s partition 0: %d (first) → %d (last)", topic, firstOffset, lastOffset)
 
-		if firstOffset == lastOffset {
+		if firstOffset >= lastOffset {
 			color.Yellow("⚠️  No messages found in topic %s", topic)
 			return fmt.Errorf("no messages found in topic")
 		}
 
 		// 3️⃣ Try time-based offset lookup with proper error handling
 		color.Blue("🕐 Finding start offset for time: %s", fromStr)
-		startOffset, err := conn.ReadOffset(from)
-		if err != nil {
+		startOffsetResults, err := adminClient.ListOffsetsAfterMilli(ctx, from.UnixMilli(), topic)
+		var startOffset int64 = firstOffset
+		if err == nil && startOffsetResults != nil {
+			if offsets, exists := startOffsetResults[topic]; exists {
+				if partOffset, partExists := offsets[0]; partExists {
+					startOffset = partOffset.Offset
+				}
+			}
+		} else {
 			color.Yellow("⚠️  Could not find offset for start time, using first offset")
-			startOffset = firstOffset
-		} else if startOffset == -1 {
-			color.Yellow("⚠️  Start time is before all messages, using first offset")
-			startOffset = firstOffset
 		}
 
 		color.Blue("🕐 Finding end offset for time: %s", toStr)
-		endOffset, err := conn.ReadOffset(to)
-		if err != nil {
+		endOffsetResults, err := adminClient.ListOffsetsAfterMilli(ctx, to.UnixMilli(), topic)
+		var endOffset int64 = lastOffset
+		if err == nil && endOffsetResults != nil {
+			if offsets, exists := endOffsetResults[topic]; exists {
+				if partOffset, partExists := offsets[0]; partExists {
+					endOffset = partOffset.Offset
+				}
+			}
+		} else {
 			color.Yellow("⚠️  Could not find offset for end time, using last offset")
-			endOffset = lastOffset
-		} else if endOffset == -1 {
-			color.Yellow("⚠️  End time is after all messages, using last offset")
-			endOffset = lastOffset
 		}
 
 		color.Cyan("📊 Time-based offset range: %d → %d", startOffset, endOffset)
@@ -109,24 +144,14 @@ The output file can be specified with the --output flag. If not provided, it def
 		messageCount := endOffset - startOffset
 		color.Green("🎯 Will read approximately %d messages", messageCount)
 
-		// 3️⃣ Create reader and set to start offset
-		reader := kafkaGo.NewReader(kafkaGo.ReaderConfig{
-			Brokers:   cfg.Brokers,
-			Topic:     topic,
-			Partition: 0,
-		})
-		defer func() {
-			if closeErr := reader.Close(); closeErr != nil {
-				color.Red("Warning: failed to close reader: %v", closeErr)
-			}
-		}()
-
-		// Set the reader to start from our calculated offset
-		if setErr := reader.SetOffset(startOffset); setErr != nil {
-			return fmt.Errorf("failed to set reader offset to %d: %w", startOffset, setErr)
+		// 3️⃣ Create partition consumer using utility function
+		consumerClient, err := cfg.NewPartitionConsumerClient(topic, 0, startOffset)
+		if err != nil {
+			return fmt.Errorf("failed to create consumer client: %w", err)
 		}
+		defer consumerClient.Close()
 
-		color.Blue("✅ Reader positioned at offset %d", startOffset)
+		color.Blue("✅ Consumer positioned at offset %d", startOffset)
 
 		// 4️⃣ Read messages until endOffset (no timestamp filtering needed)
 		var messages []MessageEnvelope
@@ -140,39 +165,62 @@ The output file can be specified with the --output flag. If not provided, it def
 		readCtx, cancel := context.WithTimeout(ctx, timeoutDuration)
 		defer cancel()
 
-		for {
-			m, readErr := reader.ReadMessage(readCtx)
-			if readErr != nil {
-				color.Yellow("📝 Finished reading: %v", readErr)
-				break // probably EOF or timeout
+		reachedEnd := false
+		for !reachedEnd {
+			select {
+			case <-readCtx.Done():
+				color.Yellow("📝 Finished reading: timeout reached")
+				reachedEnd = true
+				continue
+			default:
 			}
 
-			readCount++
-			if readCount%1000 == 0 || readCount <= 10 {
-				color.Blue("📊 Read message %d/%d at offset %d", readCount, expectedMessages, m.Offset)
+			fetches := consumerClient.PollFetches(readCtx)
+			if errs := fetches.Errors(); len(errs) > 0 {
+				for _, err := range errs {
+					if err.Err.Error() != "context deadline exceeded" {
+						color.Red("fetch error: %v", err)
+					}
+				}
+				continue
 			}
 
-			if m.Offset >= endOffset {
-				color.Blue("🛑 Reached end offset %d", endOffset)
-				break
+			if fetches.Empty() {
+				continue
 			}
 
-			// Convert headers
-			headers := make(map[string]string)
-			for _, h := range m.Headers {
-				headers[h.Key] = string(h.Value)
-			}
+			// Process records
+			fetches.EachPartition(func(p kgo.FetchTopicPartition) {
+				for _, record := range p.Records {
+					readCount++
+					if readCount%1000 == 0 || readCount <= 10 {
+						color.Blue("📊 Read message %d/%d at offset %d", readCount, expectedMessages, record.Offset)
+					}
 
-			// Parse message body
-			var body map[string]interface{}
-			if jsonErr := json.Unmarshal(m.Value, &body); jsonErr != nil {
-				body = map[string]interface{}{"raw": string(m.Value)}
-			}
+					if record.Offset >= endOffset {
+						color.Blue("🛑 Reached end offset %d", endOffset)
+						reachedEnd = true
+						return
+					}
 
-			messages = append(messages, MessageEnvelope{
-				Topic:   topic,
-				Headers: headers,
-				Message: body,
+					// Convert headers
+					headers := make(map[string]string)
+					for _, h := range record.Headers {
+						headers[h.Key] = string(h.Value)
+					}
+
+					// Parse message body
+					var body map[string]interface{}
+					if jsonErr := json.Unmarshal(record.Value, &body); jsonErr != nil {
+						body = map[string]interface{}{"raw": string(record.Value)}
+					}
+
+					messages = append(messages, MessageEnvelope{
+						Topic:   topic,
+						Headers: headers,
+						Message: body,
+					})
+				}
 			})
 		}
 

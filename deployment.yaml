@@ -1,0 +1,54 @@
+
+# Fixed deployment with adequate memory for Go builds
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-cli-deployment
+  labels:
+    app: kafka-cli
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-cli
+  template:
+    metadata:
+      labels:
+        app: kafka-cli
+    spec:
+      serviceAccountName: kafka-ui
+      containers:
+      - name: kafka-cli
+        image: golang:1.23-alpine
+        workingDir: /app
+        command: ["/bin/sh"]
+        args: 
+          - -c
+          - |
+            echo "🚀 Starting Kafka CLI setup..."
+            apk add --no-cache git ca-certificates
+            echo "📦 Cloning repository..."
+            git clone https://github.com/VincentBoillotDevalliere/kafka-cli.git /app
+            cd /app
+            echo "🔧 Downloading dependencies..."
+            go mod download
+            echo "🏗️ Building application..."
+            go build -o kafka-cli .
+            echo "✅ Build completed! Kafka CLI is ready. v2.1"
+            echo "💡 Usage: kubectl exec -it <pod-name> -- ./kafka-cli --help"
+            tail -f /dev/null
+        env:
+        - name: CGO_ENABLED
+          value: "0"
+        - name: GOOS
+          value: "linux"
+        - name: GOARCH
+          value: "amd64"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+      restartPolicy: Always

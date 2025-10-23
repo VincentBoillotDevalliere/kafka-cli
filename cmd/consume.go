@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/fatih/color"
-	kafkaGo "github.com/segmentio/kafka-go"
 	"github.com/spf13/cobra"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 )
@@ -29,33 +29,67 @@ var consumeCmd = &cobra.Command{
 	},
 }
 
-// Read from the topic using kafka.Reader
-// Readers can use consumer groups (but are not required to)
+// Read from the topic using franz-go client
+// Clients can use consumer groups for distributed consumption
 func readWithReader(topic, groupID string) {
 	cfg := kafka.LoadConfig()
-	r := kafkaGo.NewReader(kafkaGo.ReaderConfig{
-		Brokers:  cfg.Brokers,
-		GroupID:  groupID,
-		Topic:    topic,
-		MaxBytes: 100, // per message
-		// more options are available
-	})
 
-	// Create a deadline
+	// Create optimized consumer client
+	client, err := cfg.NewConsumerClient(groupID, topic)
+	if err != nil {
+		color.Red("failed to create kafka client: %v", err)
+		return
+	}
+	defer client.Close()
+
+	// Create a deadline context
 	readDeadline, cancel := context.WithDeadline(context.Background(),
 		time.Now().Add(60*time.Second))
 	defer cancel()
-	for {
-		msg, err := r.ReadMessage(readDeadline)
-		if err != nil {
-			break
-		}
-		color.Yellow("message at topic/partition/offset %v/%v/%v: %s = %s",
-			msg.Topic, msg.Partition, msg.Offset, string(msg.Key), string(msg.Value))
-	}
 
-	if err := r.Close(); err != nil {
-		color.Red("failed to close reader: %v", err)
+	// Poll for messages with shorter intervals for better responsiveness
+	for {
+		// Use a shorter context for each poll to make it more responsive
+		pollCtx, pollCancel := context.WithTimeout(readDeadline, 2*time.Second)
+		fetches := client.PollFetches(pollCtx)
+		pollCancel()
+
+		if errs := fetches.Errors(); len(errs) > 0 {
+			// Only log non-timeout errors to reduce noise
+			for _, err := range errs {
+				if err.Err.Error() != "context deadline exceeded" {
+					color.Red("fetch error: %v", err)
+				}
+			}
+			// Don't continue immediately on error, check if context is done
+			select {
+			case <-readDeadline.Done():
+				color.Blue("Consumer timeout reached")
+				return
+			default:
+				continue
+			}
+		}
+
+		if fetches.Empty() {
+			// Check if we've reached the deadline
+			select {
+			case <-readDeadline.Done():
+				color.Blue("Consumer timeout reached, no messages received")
+				return
+			default:
+				// Continue polling - no messages right now but keep trying
+				continue
+			}
+		}
+
+		// Process all records
+		fetches.EachPartition(func(p kgo.FetchTopicPartition) {
+			for _, record := range p.Records {
+				color.Yellow("message at topic/partition/offset %v/%v/%v: %s = %s",
+					record.Topic, record.Partition, record.Offset, string(record.Key), string(record.Value))
+			}
+		})
 	}
 }
 

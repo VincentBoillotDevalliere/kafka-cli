@@ -8,8 +8,8 @@ import (
 	"os"
 
 	"github.com/fatih/color"
-	kafkaGo "github.com/segmentio/kafka-go"
 	"github.com/spf13/cobra"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 )
@@ -82,24 +82,38 @@ func init() {
 
 func ProduceMessage(topic, jsonInput string, headers map[string]string) error {
 	cfg := kafka.LoadConfig()
-	w := kafkaGo.NewWriter(kafkaGo.WriterConfig{
-		Brokers:  cfg.Brokers,
-		Topic:    topic,
-		Balancer: &kafkaGo.Hash{},
-	})
-	var kafkaHeaders []kafkaGo.Header
-	for k, v := range headers {
-		kafkaHeaders = append(kafkaHeaders, kafkaGo.Header{Key: k, Value: []byte(v)})
-	}
-	err := w.WriteMessages(context.Background(),
-		kafkaGo.Message{
-			Value:   []byte(jsonInput),
-			Headers: kafkaHeaders,
-		},
-	)
+
+	// Create optimized producer client
+	client, err := cfg.NewProducerClient(topic)
 	if err != nil {
-		return fmt.Errorf("failed to write message: %w", err)
+		return fmt.Errorf("failed to create kafka client: %w", err)
 	}
+	defer client.Close()
+
+	// Convert headers to franz-go format
+	var franzHeaders []kgo.RecordHeader
+	for k, v := range headers {
+		franzHeaders = append(franzHeaders, kgo.RecordHeader{Key: k, Value: []byte(v)})
+	}
+
+	// Create and send the record
+	record := &kgo.Record{
+		Topic:   topic,
+		Value:   []byte(jsonInput),
+		Headers: franzHeaders,
+	}
+
+	// Produce the message synchronously
+	ctx := context.Background()
+	results := client.ProduceSync(ctx, record)
+
+	// Check for errors
+	for _, result := range results {
+		if result.Err != nil {
+			return fmt.Errorf("failed to produce message: %w", result.Err)
+		}
+	}
+
 	return nil
 }
 
