@@ -7,10 +7,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 	"github.com/twmb/franz-go/pkg/kgo"
+
+	"github.com/VincentBoillotDevalliere/kafka-cli/kafka"
 )
 
 var (
