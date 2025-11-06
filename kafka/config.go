@@ -1,157 +1,365 @@
+// Package kafka provides Kafka configuration and client utilities with AWS MSK IAM support
 package kafka
 
 import (
 	"context"
-	"log"
+	"crypto/tls"
+	"fmt"
+	"os"
 	"strings"
 	"time"
 
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/fatih/color"
-	"github.com/joho/godotenv"
-	"github.com/spf13/viper"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/sasl/aws"
 )
 
+// Config holds the Kafka configuration
 type Config struct {
-	Brokers   []string
-	UseAWSIAM bool
-	AWSRegion string
+	Brokers    []string
+	UseAWSIAM  bool
+	AWSRegion  string
+	TLSEnabled bool
+	awsConfig  *awssdk.Config
 }
 
-func LoadConfig() Config {
-	// Load .env into environment
-	_ = godotenv.Load()
-
-	// Viper will look at env variables
-	viper.AutomaticEnv()
-
-	// Set defaults - use localhost for local development, can be overridden by env vars
-	viper.SetDefault("KAFKA_BROKERS", "localhost:9092")
-	viper.SetDefault("KAFKA_USE_AWS_IAM", "false")
-	viper.SetDefault("AWS_REGION", "us-east-1")
-
-	brokers := viper.GetString("KAFKA_BROKERS")
-	if brokers == "" {
-		log.Fatal(color.RedString("KAFKA_BROKERS environment variable is required"))
-	}
-
-	useAWSIAM := viper.GetBool("KAFKA_USE_AWS_IAM")
-	awsRegion := viper.GetString("AWS_REGION")
-
-	if useAWSIAM {
-		color.Blue("Connecting to AWS MSK brokers: %s (region: %s) with IAM authentication", brokers, awsRegion)
-	} else {
-		color.Blue("Connecting to Kafka brokers: %s", brokers)
-	}
-
-	return Config{
-		Brokers:   strings.Split(brokers, ","),
-		UseAWSIAM: useAWSIAM,
-		AWSRegion: awsRegion,
-	}
-}
-
-// getCommonOptions returns common kgo options including AWS IAM authentication if enabled
-func (c *Config) getCommonOptions() ([]kgo.Opt, error) {
-	opts := []kgo.Opt{
-		kgo.SeedBrokers(c.Brokers...),
-	}
-
-	if c.UseAWSIAM {
-		// Load AWS configuration
-		awsConfig, err := config.LoadDefaultConfig(context.Background())
-		if err != nil {
-			return nil, err
-		}
-
-		// Get AWS credentials
-		creds, err := awsConfig.Credentials.Retrieve(context.Background())
-		if err != nil {
-			return nil, err
-		}
-
-		// Create AWS MSK IAM SASL mechanism
-		saslMech := aws.Auth{
-			AccessKey:    creds.AccessKeyID,
-			SecretKey:    creds.SecretAccessKey,
-			SessionToken: creds.SessionToken,
-			UserAgent:    "kafka-cli-franz-go",
-		}
-
-		opts = append(opts, kgo.SASL(saslMech.AsManagedStreamingIAMMechanism()))
-	}
-
-	return opts, nil
-}
-
-// NewConsumerClient creates a new franz-go client optimized for consuming messages
-func (c *Config) NewConsumerClient(groupID, topic string) (*kgo.Client, error) {
-	commonOpts, err := c.getCommonOptions()
+// LoadConfig is a convenience function that creates a new Kafka configuration
+// and panics if there's an error (for backward compatibility)
+func LoadConfig() *Config {
+	cfg, err := NewConfig()
 	if err != nil {
-		return nil, err
+		panic(fmt.Sprintf("Failed to load Kafka configuration: %v", err))
+	}
+	return cfg
+}
+
+// NewConfig creates a new Kafka configuration from environment variables
+func NewConfig() (*Config, error) {
+	cfg := &Config{
+		TLSEnabled: true, // Default to true for security
 	}
 
-	opts := append(commonOpts,
-		kgo.ConsumerGroup(groupID),
-		kgo.ConsumeTopics(topic),
-		kgo.FetchMinBytes(1),                   // Start fetching immediately when any data is available
-		kgo.FetchMaxBytes(1024*1024),           // Allow up to 1MB per fetch (much more reasonable)
-		kgo.FetchMaxWait(100*time.Millisecond), // Don't wait more than 100ms for more data
-		kgo.SessionTimeout(10*time.Second),     // Faster session timeout
-		kgo.HeartbeatInterval(3*time.Second),   // More frequent heartbeats
+	// Parse broker addresses
+	brokersEnv := os.Getenv("KAFKA_BROKERS")
+	if brokersEnv == "" {
+		brokersEnv = "localhost:9092" // Default for local development
+		cfg.TLSEnabled = false
+	}
+	cfg.Brokers = strings.Split(brokersEnv, ",")
+
+	// Check if AWS IAM is enabled - auto-detect MSK or explicit setting
+	cfg.UseAWSIAM = strings.ToLower(os.Getenv("KAFKA_USE_AWS_IAM")) == "true"
+
+	// Auto-detect AWS MSK based on broker URLs
+	if !cfg.UseAWSIAM {
+		for _, broker := range cfg.Brokers {
+			if strings.Contains(broker, ".kafka.") && strings.Contains(broker, ".amazonaws.com") {
+				cfg.UseAWSIAM = true
+				break
+			}
+		}
+	}
+
+	if cfg.UseAWSIAM {
+		// Get AWS region
+		cfg.AWSRegion = os.Getenv("AWS_REGION")
+		if cfg.AWSRegion == "" {
+			return nil, fmt.Errorf("AWS_REGION environment variable is required when using AWS MSK")
+		}
+
+		// Load AWS configuration
+		awsCfg, err := config.LoadDefaultConfig(context.Background(),
+			config.WithRegion(cfg.AWSRegion))
+		if err != nil {
+			return nil, fmt.Errorf("failed to load AWS config: %w", err)
+		}
+		cfg.awsConfig = &awsCfg
+	}
+
+	return cfg, nil
+}
+
+// CreateProducer creates a new Kafka producer with the configuration
+func (c *Config) CreateProducer(opts ...ProducerOption) (*kgo.Client, error) {
+	options := c.getBaseOptions()
+
+	// Apply producer-specific options
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	// Add producer-specific configurations
+	options = append(options,
+		kgo.RequiredAcks(kgo.AllISRAcks()), // Wait for all replicas
+		kgo.ProducerBatchMaxBytes(1000000), // 1MB batches
+		kgo.ProducerBatchCompression(kgo.GzipCompression()),
+		kgo.ProducerLinger(100*time.Millisecond), // Batch for up to 100ms
 	)
 
-	return kgo.NewClient(opts...)
+	client, err := kgo.NewClient(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kafka producer: %w", err)
+	}
+
+	return client, nil
 }
 
-// NewProducerClient creates a new franz-go client optimized for producing messages
-func (c *Config) NewProducerClient(defaultTopic string) (*kgo.Client, error) {
-	commonOpts, err := c.getCommonOptions()
+// CreateConsumer creates a new Kafka consumer with the configuration
+func (c *Config) CreateConsumer(consumerGroup string, topics []string, opts ...ConsumerOption) (*kgo.Client, error) {
+	if consumerGroup == "" {
+		return nil, fmt.Errorf("consumer group is required")
+	}
+	if len(topics) == 0 {
+		return nil, fmt.Errorf("at least one topic is required")
+	}
+
+	options := c.getBaseOptions()
+
+	// Apply consumer-specific options
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	// Add consumer-specific configurations
+	options = append(options,
+		kgo.ConsumerGroup(consumerGroup),
+		kgo.ConsumeTopics(topics...),
+		kgo.FetchMinBytes(1),                   // Fetch at least 1 byte
+		kgo.FetchMaxBytes(52428800),            // 50MB max fetch
+		kgo.FetchMaxWait(500*time.Millisecond), // Wait up to 500ms for data
+		kgo.SessionTimeout(30*time.Second),
+		kgo.HeartbeatInterval(3*time.Second),
+		kgo.RebalanceTimeout(30*time.Second),
+		kgo.AutoCommitInterval(1*time.Second),
+	)
+
+	client, err := kgo.NewClient(options...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create Kafka consumer: %w", err)
 	}
 
-	opts := commonOpts
-	if defaultTopic != "" {
-		opts = append(opts, kgo.DefaultProduceTopic(defaultTopic))
-	}
-
-	return kgo.NewClient(opts...)
+	return client, nil
 }
 
-// NewAdminClient creates a new franz-go admin client for metadata operations
-func (c *Config) NewAdminClient() (*kgo.Client, *kadm.Client, error) {
-	commonOpts, err := c.getCommonOptions()
-	if err != nil {
-		return nil, nil, err
+// getBaseOptions returns the base kgo options for both producers and consumers
+func (c *Config) getBaseOptions() []kgo.Opt {
+	options := []kgo.Opt{
+		kgo.SeedBrokers(c.Brokers...),
+		kgo.RequestTimeoutOverhead(10 * time.Second),
+		kgo.ConnIdleTimeout(30 * time.Second),
 	}
 
-	client, err := kgo.NewClient(commonOpts...)
-	if err != nil {
-		return nil, nil, err
+	// Add TLS configuration if enabled
+	if c.TLSEnabled {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+			MinVersion:         tls.VersionTLS12,
+		}
+		options = append(options, kgo.Dialer((&tls.Dialer{
+			Config: tlsConfig,
+		}).DialContext))
 	}
 
-	adminClient := kadm.NewClient(client)
+	// Add AWS IAM SASL configuration if enabled
+	if c.UseAWSIAM && c.awsConfig != nil {
+		saslMech := aws.ManagedStreamingIAM(func(ctx context.Context) (aws.Auth, error) {
+			creds, err := c.awsConfig.Credentials.Retrieve(ctx)
+			if err != nil {
+				return aws.Auth{}, fmt.Errorf("failed to retrieve AWS credentials: %w", err)
+			}
+
+			return aws.Auth{
+				AccessKey:    creds.AccessKeyID,
+				SecretKey:    creds.SecretAccessKey,
+				SessionToken: creds.SessionToken,
+				UserAgent:    "kafka-cli",
+			}, nil
+		})
+
+		options = append(options, kgo.SASL(saslMech))
+	}
+
+	return options
+}
+
+// ProducerOption is a function type for configuring producer options
+type ProducerOption func(*[]kgo.Opt)
+
+// WithProducerBatchSize sets the producer batch size
+func WithProducerBatchSize(size int32) ProducerOption {
+	return func(opts *[]kgo.Opt) {
+		*opts = append(*opts, kgo.ProducerBatchMaxBytes(size))
+	}
+}
+
+// WithProducerLinger sets the producer linger time
+func WithProducerLinger(linger time.Duration) ProducerOption {
+	return func(opts *[]kgo.Opt) {
+		*opts = append(*opts, kgo.ProducerLinger(linger))
+	}
+}
+
+// WithProducerCompression sets the producer compression type
+func WithProducerCompression(compression kgo.CompressionCodec) ProducerOption {
+	return func(opts *[]kgo.Opt) {
+		*opts = append(*opts, kgo.ProducerBatchCompression(compression))
+	}
+}
+
+// WithRequiredAcks sets the required acknowledgments for the producer
+func WithRequiredAcks(acks kgo.Acks) ProducerOption {
+	return func(opts *[]kgo.Opt) {
+		*opts = append(*opts, kgo.RequiredAcks(acks))
+	}
+}
+
+// ConsumerOption is a function type for configuring consumer options
+type ConsumerOption func(*[]kgo.Opt)
+
+// WithConsumerOffset sets the initial offset for the consumer
+func WithConsumerOffset(offset kgo.Offset) ConsumerOption {
+	return func(opts *[]kgo.Opt) {
+		*opts = append(*opts, kgo.ConsumeResetOffset(offset))
+	}
+}
+
+// WithAutoCommit enables or disables auto-commit for the consumer
+func WithAutoCommit(enabled bool) ConsumerOption {
+	return func(opts *[]kgo.Opt) {
+		if !enabled {
+			*opts = append(*opts, kgo.DisableAutoCommit())
+		}
+	}
+}
+
+// WithSessionTimeout sets the session timeout for the consumer
+func WithSessionTimeout(timeout time.Duration) ConsumerOption {
+	return func(opts *[]kgo.Opt) {
+		*opts = append(*opts, kgo.SessionTimeout(timeout))
+	}
+}
+
+// WithHeartbeatInterval sets the heartbeat interval for the consumer
+func WithHeartbeatInterval(interval time.Duration) ConsumerOption {
+	return func(opts *[]kgo.Opt) {
+		*opts = append(*opts, kgo.HeartbeatInterval(interval))
+	}
+}
+
+// WithFetchMaxBytes sets the maximum bytes to fetch per request
+func WithFetchMaxBytes(maxBytes int32) ConsumerOption {
+	return func(opts *[]kgo.Opt) {
+		*opts = append(*opts, kgo.FetchMaxBytes(maxBytes))
+	}
+}
+
+// WithFetchMaxWait sets the maximum time to wait for fetch requests
+func WithFetchMaxWait(maxWait time.Duration) ConsumerOption {
+	return func(opts *[]kgo.Opt) {
+		*opts = append(*opts, kgo.FetchMaxWait(maxWait))
+	}
+}
+
+// TestConnection tests the connection to Kafka brokers
+func (c *Config) TestConnection(ctx context.Context) error {
+	client, err := kgo.NewClient(c.getBaseOptions()...)
+	if err != nil {
+		return fmt.Errorf("failed to create test client: %w", err)
+	}
+	defer client.Close()
+
+	// Try to ping brokers to test connection
+	err = client.Ping(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Kafka brokers: %w", err)
+	}
+
+	return nil
+}
+
+// GetBrokers returns the configured broker addresses
+func (c *Config) GetBrokers() []string {
+	return c.Brokers
+}
+
+// IsAWSIAMEnabled returns true if AWS IAM authentication is enabled
+func (c *Config) IsAWSIAMEnabled() bool {
+	return c.UseAWSIAM
+}
+
+// GetAWSRegion returns the configured AWS region
+func (c *Config) GetAWSRegion() string {
+	return c.AWSRegion
+}
+
+// IsTLSEnabled returns true if TLS is enabled
+func (c *Config) IsTLSEnabled() bool {
+	return c.TLSEnabled
+}
+
+// NewConsumerClient creates a new consumer client (for backward compatibility)
+func (c *Config) NewConsumerClient(groupID, topic string) (*kgo.Client, error) {
+	return c.CreateConsumer(groupID, []string{topic})
+}
+
+// NewProducerClient creates a new producer client (for backward compatibility)
+func (c *Config) NewProducerClient(topic string) (*kgo.Client, error) {
+	return c.CreateProducer()
+}
+
+// AdminClient wraps kadm.Client to provide the expected admin operations
+type AdminClient struct {
+	*kadm.Client
+}
+
+// ListTopics returns topic metadata
+func (ac *AdminClient) ListTopics(ctx context.Context, topics ...string) (map[string]kadm.TopicDetail, error) {
+	if len(topics) == 0 {
+		return ac.Client.ListTopics(ctx)
+	}
+	return ac.Client.ListTopics(ctx, topics...)
+}
+
+// ListOffsetsAfterMilli returns offsets for topics after a given timestamp
+func (ac *AdminClient) ListOffsetsAfterMilli(ctx context.Context, millis int64, topics ...string) (kadm.ListedOffsets, error) {
+	return ac.Client.ListOffsetsAfterMilli(ctx, millis, topics...)
+}
+
+// NewAdminClient creates a new admin client (for backward compatibility)
+// Returns client, adminClient, error to match existing code expectations
+func (c *Config) NewAdminClient() (*kgo.Client, *AdminClient, error) {
+	// For admin operations, we just need a basic client
+	options := c.getBaseOptions()
+	client, err := kgo.NewClient(options...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create Kafka admin client: %w", err)
+	}
+
+	// Create kadm admin client
+	adminClient := &AdminClient{
+		Client: kadm.NewClient(client),
+	}
+
 	return client, adminClient, nil
 }
 
-// NewPartitionConsumerClient creates a franz-go client for consuming specific partitions with offset control
-func (c *Config) NewPartitionConsumerClient(topic string, partition int32, offset int64) (*kgo.Client, error) {
-	commonOpts, err := c.getCommonOptions()
-	if err != nil {
-		return nil, err
-	}
+// NewPartitionConsumerClient creates a partition consumer client (for backward compatibility)
+func (c *Config) NewPartitionConsumerClient(topic string, partition int, offset int64) (*kgo.Client, error) {
+	// For partition consumption, we create a client that consumes from specific partition
+	options := c.getBaseOptions()
 
-	opts := append(commonOpts,
+	// Add partition-specific consumption options
+	options = append(options,
 		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{
-			topic: {partition: kgo.NewOffset().At(offset)},
+			topic: {int32(partition): kgo.NewOffset().At(offset)},
 		}),
-		kgo.FetchMinBytes(1),
-		kgo.FetchMaxBytes(1024*1024),
 	)
 
-	return kgo.NewClient(opts...)
+	client, err := kgo.NewClient(options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kafka partition consumer client: %w", err)
+	}
+	return client, nil
 }
