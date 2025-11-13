@@ -4,6 +4,7 @@ package kafka
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"strings"
@@ -23,6 +24,7 @@ type Config struct {
 	AWSRegion  string
 	TLSEnabled bool
 	awsConfig  *awssdk.Config
+	tlsConfig  *tls.Config
 }
 
 // LoadConfig is a convenience function that creates a new Kafka configuration
@@ -49,8 +51,15 @@ func NewConfig() (*Config, error) {
 	}
 	cfg.Brokers = strings.Split(brokersEnv, ",")
 
+	// Allow env override for TLS enablement
+	if tlsEnabled, ok := lookupEnvBool("KAFKA_TLS_ENABLED"); ok {
+		cfg.TLSEnabled = tlsEnabled
+	}
+
 	// Check if AWS IAM is enabled - auto-detect MSK or explicit setting
-	cfg.UseAWSIAM = strings.ToLower(os.Getenv("KAFKA_USE_AWS_IAM")) == "true"
+	if useIAM, ok := lookupEnvBool("KAFKA_USE_AWS_IAM"); ok {
+		cfg.UseAWSIAM = useIAM
+	}
 
 	// Auto-detect AWS MSK based on broker URLs
 	if !cfg.UseAWSIAM {
@@ -78,7 +87,55 @@ func NewConfig() (*Config, error) {
 		cfg.awsConfig = &awsCfg
 	}
 
+	if cfg.TLSEnabled {
+		tlsCfg, err := buildTLSConfigFromEnv()
+		if err != nil {
+			return nil, err
+		}
+		cfg.tlsConfig = tlsCfg
+	}
+
 	return cfg, nil
+}
+
+func buildTLSConfigFromEnv() (*tls.Config, error) {
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	if insecureSkipVerify, ok := lookupEnvBool("KAFKA_TLS_INSECURE_SKIP_VERIFY"); ok {
+		tlsCfg.InsecureSkipVerify = insecureSkipVerify
+	}
+
+	if caFile := strings.TrimSpace(os.Getenv("KAFKA_TLS_CA_FILE")); caFile != "" {
+		data, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read KAFKA_TLS_CA_FILE %q: %w", caFile, err)
+		}
+		pool := x509.NewCertPool()
+		if ok := pool.AppendCertsFromPEM(data); !ok {
+			return nil, fmt.Errorf("failed to parse CA certificates in %q", caFile)
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	return tlsCfg, nil
+}
+
+func lookupEnvBool(key string) (bool, bool) {
+	val, ok := os.LookupEnv(key)
+	if !ok {
+		return false, false
+	}
+
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // CreateProducer creates a new Kafka producer with the configuration
@@ -152,14 +209,8 @@ func (c *Config) getBaseOptions() []kgo.Opt {
 	}
 
 	// Add TLS configuration if enabled
-	if c.TLSEnabled {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false,
-			MinVersion:         tls.VersionTLS12,
-		}
-		options = append(options, kgo.Dialer((&tls.Dialer{
-			Config: tlsConfig,
-		}).DialContext))
+	if c.TLSEnabled && c.tlsConfig != nil {
+		options = append(options, kgo.DialTLSConfig(c.tlsConfig.Clone()))
 	}
 
 	// Add AWS IAM SASL configuration if enabled

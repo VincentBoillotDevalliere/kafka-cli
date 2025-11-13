@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 )
 
@@ -31,6 +32,9 @@ func Execute() {
 }
 
 func init() {
+	// Load .env if present so Kubernetes jobs or local runs can simply mount the file
+	_ = godotenv.Load()
+
 	// Here you will define your flags and configuration settings.
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
